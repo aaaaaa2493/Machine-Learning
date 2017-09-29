@@ -26,12 +26,12 @@ def print(*args, **kwargs):
 n: int = 10  # Количество классов (0-9)
 m: int = 784 + 1  # Количество признаков (28х28 картинка)
 
-lambdas = [0] + [10**i for i in range(-5, 3)]
-lam: float = lambdas[1]  # Параметр регуляризации
+lambdas = [0] + [10**i for i in range(-5, 10)]
+lam: float = lambdas[3]  # Параметр регуляризации
 
 NT: int = 70000  # Общая выборка
 cross_validation_parameter: int = 4
-N: int = 100  # Обучающая выборка
+N: int = 400  # Обучающая выборка
 T: int = NT - N  # Тестовая выборка
 
 #Y: List[NT]  # Список ответов на общую выборку
@@ -47,7 +47,8 @@ IDs = {}
 
 # 69.463454463
 
-def F(W):
+
+def F(W, X, Y, ksi, N):
 
     S = lam * np.linalg.norm(W) ** 2 / 2
 
@@ -64,7 +65,7 @@ F1 = lambda w: lam * np.linalg.norm(w) ** 2 / 2 + \
                np.sum(-np.dot(XXi, w).reshape((XXsize, 1)) + XXksi - XXones)
 
 
-W = np.random.rand(m, n) * 0.001
+W_INITIAL = np.random.rand(m, n) * 0.001
 
 mnist = fetch_mldata('MNIST original', data_home='./data')
 
@@ -97,28 +98,29 @@ test_y = data_and_answers[N:, -1].reshape((T, 1))
 
 train_X, test_X = normalize_features(train_X, test_X)
 
-calc_ksi = lambda W: (-np.log(np.power(np.sum(np.exp(np.dot(train_X, W)), axis=1), -1))).reshape((N, 1))
+calc_ksi = lambda W, X, N: (-np.log(np.power(np.sum(np.exp(np.dot(X, W)), axis=1), -1))).reshape((N, 1))
 
-ksi_start = calc_ksi(W)
-
-ksi = ksi_start
-
-history = []
-
-X = train_X
-Y = train_y
-Y = np.vectorize(lambda x: int(x))(Y)
-
-for index, one_answer in enumerate(train_y):
-    one_answer = int(one_answer[0])
-
-    if one_answer in IDs:
-        IDs[one_answer] += [index]
-    else:
-        IDs[one_answer] = [index]
+X_INITIAL = train_X
+Y_INITIAL = train_y
+Y_INITIAL = np.vectorize(lambda x: int(x))(Y_INITIAL)
 
 
-def start_thread(w, index_global, XXi, XXksi, XXsize, XXones):
+def count_indicies(Y):
+
+    ret = {}
+
+    for index, one_answer in enumerate(Y):
+        one_answer = int(one_answer[0])
+
+        if one_answer in ret:
+            ret[one_answer] += [index]
+        else:
+            ret[one_answer] = [index]
+
+    return ret
+
+
+def start_thread(w, index_global, XXi, XXksi, XXsize, XXones, N):
 
     w_local = w
     index_local = index_global
@@ -152,48 +154,101 @@ def start_thread(w, index_global, XXi, XXksi, XXsize, XXones):
 
 # сходимость градиента к нулю,
 
-for j in range(30):
+for curr_lambda in lambdas:
 
-    Wt = [0] * n
-    all_threads = []
+    print(f'CALCULATING FOR LAMBDA = {curr_lambda}')
 
-    for i in range(n):
+    W = W_INITIAL
+    Wbest = None
+    Fbest = None
 
-        index_global = i
+    lam = curr_lambda
 
-        wi = W.T[index_global].T
+    X = X_INITIAL[:300, :]
+    Y = Y_INITIAL[:300]
+    X_TEST = X_INITIAL[300:, :]
+    Y_TEST = Y_INITIAL[300:]
 
-        XXindeces = IDs.get(index_global, [])
+    N = 300
 
-        XXi = np.array([X[i] for i in XXindeces])
-        XXksi = np.array([ksi[i] for i in XXindeces])
-        XXsize = len(XXindeces)
-        XXones = np.ones_like(XXksi)
+    X, X_TEST = normalize_features(X, X_TEST)
 
-        thread = Thread(target=lambda a=wi,
-                                      b=index_global,
-                                      c=XXi,
-                                      d=XXksi,
-                                      e=XXsize,
-                                      f=XXones: start_thread(a, b, c, d, e, f))
+    ksi_start = calc_ksi(W, X, N)
+    ksi_test = calc_ksi(W, X_TEST, 100)
 
-        all_threads += [thread]
-        thread.start()
+    ksi = ksi_start
 
-    for th in all_threads:
-        th.join()
+    for j in range(15):
 
-    Wt = np.array(Wt).T.reshape((m, n))
-    #print(Wt.shape)
-    #print(np.sum(Wt))  # 3.86054716045
+        Wt = [0] * n
+        all_threads = []
 
-    print(f'{j+1}) F(W) = {F(Wt)}')
+        for i in range(n):
 
-    #print(W.shape)
-    #print(Wt.shape)
+            index_global = i
 
-    ksi = calc_ksi(Wt)
-    W = Wt
+            wi = W.T[index_global].T
+
+            IDs = count_indicies(Y)
+
+            XXindeces = IDs.get(index_global, [])
+
+            XXi = np.array([X[i] for i in XXindeces])
+            XXksi = np.array([ksi[i] for i in XXindeces])
+            XXsize = len(XXindeces)
+            XXones = np.ones_like(XXksi)
+
+            thread = Thread(target=lambda a=wi,
+                                          b=index_global,
+                                          c=XXi,
+                                          d=XXksi,
+                                          e=XXsize,
+                                          f=XXones,
+                                          g=N:  start_thread(a, b, c, d, e, f, g))
+
+            all_threads += [thread]
+            thread.start()
+
+        for th in all_threads:
+            th.join()
+
+        Wt = np.array(Wt).T.reshape((m, n))
+
+        Fcurr = F(Wt, X_TEST, Y_TEST, ksi_test, 100)
+
+        if Fbest is None or Fcurr < Fbest:
+            Wbest = Wt
+            Fbest = Fcurr
+
+        #print(Wt.shape)
+        #print(np.sum(Wt))  # 3.86054716045
+
+        print(f'{j+1}) F(W) = {F(Wt, X, Y, ksi, N)} F(test) = {Fcurr}')
+
+        #print(W.shape)
+        #print(Wt.shape)
+
+        ksi = calc_ksi(Wt, X, N)
+        ksi_test = calc_ksi(Wt, X_TEST, 100)
+        W = Wt
+
+    count_success = 0
+
+    for i in range(T):
+        result = np.dot(Wbest.T, test_X[i])
+        if np.argmax(result) == test_y[i]:
+            count_success += 1
+
+    print('Success count:', count_success / T)
+    print()
+
+    for i in Wbest:
+        for j in i:
+            print(j, end=' ')
+
+        print()
+
+    break
 
 end = datetime.now()
 print(end - start)
